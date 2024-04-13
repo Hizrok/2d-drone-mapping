@@ -7,8 +7,6 @@ from shapely.geometry import Polygon, Point
 import os
 import glob
 
-DIR = "./data/images2/DJI_{}.JPG"
-
 # SIFT object
 sift = cv2.SIFT_create()
 
@@ -23,6 +21,7 @@ class Keypoint:
 		self.index = index
 		self.point = point
 		self.descriptor = descriptor
+		self.score = 0.5
 
 class Map:
 	def __init__(self):
@@ -73,8 +72,8 @@ class Generator:
 			prev_features, prev_descriptors, prev_homography = self.incremental_new_image(img_path, prev_features, prev_descriptors, prev_homography)
 			prev_bbox = self.map_new_image(img_path, self.counter, prev_bbox)
 			self.counter += 1
-
-		self.plot_bboxes(self.incremental_bboxes, self.map_bboxes)
+			self.plot_bboxes(self.incremental_bboxes, self.map_bboxes)
+			self.plot_map()
 
 		pass
 
@@ -88,7 +87,7 @@ class Generator:
 		h, w = img.shape[:2]
 		bbox = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
 
-		keypoints = [Keypoint(1, features[i].pt, descriptors[i]) for i in range(len(features))]
+		keypoints = [Keypoint(0, features[i].pt, descriptors[i]) for i in range(len(features))]
 
 		self.map.add_keypoints(keypoints)
 
@@ -136,6 +135,8 @@ class Generator:
 			dist = np.linalg.norm(point - centroid)
 			enlarged_bbox.append(centroid + (norm_vector * dist * 1.5))
 		enlarged_bbox = np.array(enlarged_bbox, dtype=np.float32)
+
+		self.plot_prediction(prev_bbox, enlarged_bbox)
 		
 		keypoints: list[Keypoint] = self.map.get_keypoints(Polygon(enlarged_bbox))
 		map_points = [keypoints[i].point for i in range(len(keypoints))]
@@ -181,6 +182,68 @@ class Generator:
 		plt.ylim(max_y+50, min_y-50)
 		plt.show()
 
+	def plot_prediction(self, prev_bbox, enlarged_bbox):
+		min_y = np.min(enlarged_bbox[:, 1])
+		max_y = np.max(enlarged_bbox[:, 1])
+		plot_bbox(prev_bbox, 'blue')
+		plot_bbox(enlarged_bbox, 'blue', '--')
+
+		keypoints = self.map.get_keypoints(Polygon(enlarged_bbox))
+		keypoint_dict = dict()
+		for kp in keypoints:
+			index = kp.index
+			pt = kp.point
+			if index not in keypoint_dict.keys():
+				keypoint_dict[index] = []
+			keypoint_dict[index].append(pt)
+		
+		colors = ['red', 'blue', 'green', 'yellow', 'purple', 'black']
+		for key, value in keypoint_dict.items():
+			x = [v[0] for v in value]
+			y = [v[1] for v in value]
+			plt.scatter(x, y, color=colors[key % len(colors)], alpha=0.1)
+
+		plt.ylim(max_y+50, min_y-50)
+		plt.show()
+
+	@staticmethod
+	def get_color(score):
+		color = 'grey'
+		if score > 0.3:
+			color = 'blue'
+		if score > 0.5:
+			color = 'red'
+		return color
+
+	def plot_map(self):
+		
+		kp_dict = dict()
+		
+		for kp in self.map.keypoints:
+			color = self.get_color(kp.score)
+			if color not in kp_dict.keys():
+				kp_dict[color] = []
+			kp_dict[color].append(kp.point)
+		
+		for color, points in kp_dict.items():
+			x = [p[0] for p in points]
+			y = [p[1] for p in points]
+			plt.scatter(x, y, color=color, alpha=0.1)
+
+		min_y = float('inf')
+		max_y = float('-inf')
+		for i in range(len(self.map_bboxes)):
+			bbox = self.map_bboxes[i]
+			
+			plot_bbox(bbox, 'blue')
+			
+			min_y_bbox = np.min(bbox[:, 1])
+			max_y_bbox = np.max(bbox[:, 1])
+			min_y = min(min_y, min_y_bbox)
+			max_y = max(max_y, max_y_bbox)
+		plt.ylim(max_y+50, min_y-50)
+		plt.show()
+
 	@staticmethod
 	def find_matches(prev_descriptors, new_descriptors):
 		matches = flann.knnMatch(prev_descriptors, new_descriptors, k=2)
@@ -199,11 +262,11 @@ class Generator:
 
 		return H
 
-def plot_bbox(bbox, color='red'):
+def plot_bbox(bbox, color='red', style='-'):
 	for i in range(len(bbox)):
 		current_point = bbox[i]
 		next_point = bbox[(i + 1) % len(bbox)]
-		plt.plot([current_point[0], next_point[0]], [current_point[1], next_point[1]], '-', color=color)
+		plt.plot([current_point[0], next_point[0]], [current_point[1], next_point[1]], style, color=color)
 
 def get_jpg_files(directory):
 	pattern = os.path.join(directory, '*.[jJ][pP][gG]')
