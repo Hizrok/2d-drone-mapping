@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import Polygon, Point
+import os
+import glob
 
 DIR = "./data/images2/DJI_{}.JPG"
 
@@ -40,30 +42,45 @@ class Map:
 		return keypoints
 	
 class Generator:
-	def __init__(self):
+	def __init__(self, queue, limit=None, skip_n=0):
 		self.map = Map()
+		
+		self.queue = queue
+		self.limit = limit if limit is not None else len(queue)
+		self.counter = 1
+		for _ in range(skip_n):
+			if len(self.queue):
+				self.queue.pop(0)
+			else:
+				break
 
 		self.incremental_bboxes = []
 		self.map_bboxes = []
 
 	def run(self):
 		
+		if len(self.queue) == 0:
+			return
+
 		prev_features, prev_descriptors, prev_homography, prev_bbox = self.initialize()
 
 		self.incremental_bboxes.append(prev_bbox)
 		self.map_bboxes.append(prev_bbox)
 
-		for index in range(21, 31):
-			print(index)
-			prev_features, prev_descriptors, prev_homography = self.incremental_new_image(index, prev_features, prev_descriptors, prev_homography)
-			prev_bbox = self.map_new_image(index, prev_bbox)
+		while len(self.queue) and self.counter < self.limit:
+			print(self.counter)
+			img_path = self.queue.pop(0)
+			prev_features, prev_descriptors, prev_homography = self.incremental_new_image(img_path, prev_features, prev_descriptors, prev_homography)
+			prev_bbox = self.map_new_image(img_path, self.counter, prev_bbox)
+			self.counter += 1
 
 		self.plot_bboxes(self.incremental_bboxes, self.map_bboxes)
 
 		pass
 
 	def initialize(self):
-		img = cv2.imread(get_image_path(20))[::4,::4]
+		img_path = self.queue.pop(0)
+		img = cv2.imread(img_path)[::4,::4]
 		gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 		features, descriptors = sift.detectAndCompute(gray, None)
 		homography = [[1,0,0], [0,1,0], [0,0,1]]
@@ -77,20 +94,20 @@ class Generator:
 
 		return features, descriptors, homography, bbox
 
-	def incremental_new_image(self, index, prev_features, prev_descriptors, prev_homography):
-		img = cv2.imread(get_image_path(index))[::4,::4]
+	def incremental_new_image(self, img_path, prev_features, prev_descriptors, prev_homography):
+		img = cv2.imread(img_path)[::4,::4]
 		gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 		features, descriptors = sift.detectAndCompute(gray, None)
 
 		h, w = img.shape[:2]
 		bbox = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
 
-		matches = find_matches(prev_descriptors, descriptors)
+		matches = self.find_matches(prev_descriptors, descriptors)
 
 		src_pts = [features[m.trainIdx].pt for m in matches]
 		dst_pts = [prev_features[m.queryIdx].pt for m in matches]
 
-		homography = find_homography(src_pts, dst_pts)
+		homography = self.find_homography(src_pts, dst_pts)
 		homography = np.matmul(prev_homography, homography)
 
 		transformed_bbox = cv2.perspectiveTransform(bbox.reshape(-1, 1, 2), homography)
@@ -99,8 +116,8 @@ class Generator:
 		
 		return features, descriptors, homography
 	
-	def map_new_image(self, index, prev_bbox):
-		img = cv2.imread(get_image_path(index))[::4,::4]
+	def map_new_image(self, img_path, index, prev_bbox):
+		img = cv2.imread(img_path)[::4,::4]
 		gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 		features, descriptors = sift.detectAndCompute(gray, None)
 
@@ -117,19 +134,19 @@ class Generator:
 			norm = np.linalg.norm(vector)
 			norm_vector = vector / norm
 			dist = np.linalg.norm(point - centroid)
-			enlarged_bbox.append(centroid + (norm_vector * dist * 1.2))
+			enlarged_bbox.append(centroid + (norm_vector * dist * 1.5))
 		enlarged_bbox = np.array(enlarged_bbox, dtype=np.float32)
 		
 		keypoints: list[Keypoint] = self.map.get_keypoints(Polygon(enlarged_bbox))
 		map_points = [keypoints[i].point for i in range(len(keypoints))]
 		map_descriptors = np.float32([keypoints[i].descriptor for i in range(len(keypoints))])
 
-		matches = find_matches(map_descriptors, descriptors)
+		matches = self.find_matches(map_descriptors, descriptors)
 
 		src_pts = [features[m.trainIdx].pt for m in matches]
 		dst_pts = [map_points[m.queryIdx] for m in matches]
 
-		homography = find_homography(src_pts, dst_pts)
+		homography = self.find_homography(src_pts, dst_pts)
 
 		transformed_bbox = cv2.perspectiveTransform(bbox.reshape(-1, 1, 2), homography)
 		transformed_bbox = np.squeeze(transformed_bbox)
@@ -163,14 +180,24 @@ class Generator:
 			max_y = max(max_y, max_y_bbox1, max_y_bbox2)
 		plt.ylim(max_y+50, min_y-50)
 		plt.show()
-	
-def get_min_max(bbox):
-	min_x = np.min(bbox[:, 0])
-	max_x = np.max(bbox[:, 0])
-	min_y = np.min(bbox[:, 1])
-	max_y = np.max(bbox[:, 1])
 
-	return (min_x, max_x, min_y, max_y)
+	@staticmethod
+	def find_matches(prev_descriptors, new_descriptors):
+		matches = flann.knnMatch(prev_descriptors, new_descriptors, k=2)
+		good_matches = []
+		for m, n in matches:
+			if m.distance < 0.7 * n.distance:
+				good_matches.append(m)
+		return good_matches
+
+	@staticmethod
+	def find_homography(src_pts, dst_pts):
+		src_pts = np.float32(src_pts).reshape(-1, 1, 2)
+		dst_pts = np.float32(dst_pts).reshape(-1, 1, 2)
+
+		H, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+
+		return H
 
 def plot_bbox(bbox, color='red'):
 	for i in range(len(bbox)):
@@ -178,29 +205,14 @@ def plot_bbox(bbox, color='red'):
 		next_point = bbox[(i + 1) % len(bbox)]
 		plt.plot([current_point[0], next_point[0]], [current_point[1], next_point[1]], '-', color=color)
 
-def find_matches(prev_descriptors, new_descriptors):
-	matches = flann.knnMatch(prev_descriptors, new_descriptors, k=2)
-	good_matches = []
-	for m, n in matches:
-		if m.distance < 0.7 * n.distance:
-			good_matches.append(m)
-	return good_matches
-
-def find_homography(src_pts, dst_pts):
-	src_pts = np.float32(src_pts).reshape(-1, 1, 2)
-	dst_pts = np.float32(dst_pts).reshape(-1, 1, 2)
-
-	H, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-
-	return H
-
-def get_image_path(index):
-	str_index = str(index)
-	while len(str_index) < 4:
-		str_index = f"0{str_index}"
-	return DIR.format(str_index)
+def get_jpg_files(directory):
+	pattern = os.path.join(directory, '*.[jJ][pP][gG]')
+	jpg_files = glob.glob(pattern)
+	return jpg_files
 
 if __name__ == "__main__":
-	# run()
-	g = Generator()
+	jpg_files = get_jpg_files('./data/images2')
+	queue = list(sorted(jpg_files))
+
+	g = Generator(queue)
 	g.run()
