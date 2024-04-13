@@ -34,9 +34,10 @@ class Map:
 		keypoints: list[Keypoint] = []
 
 		for keypoint in self.keypoints:
-			point = Point(keypoint.point)
-			if polygon.contains(point):
-				keypoints.append(keypoint)
+			if keypoint.score > 0.3:
+				point = Point(keypoint.point)
+				if polygon.contains(point):
+					keypoints.append(keypoint)
 
 		return keypoints
 	
@@ -153,7 +154,35 @@ class Generator:
 		transformed_bbox = np.squeeze(transformed_bbox)
 		self.map_bboxes.append(transformed_bbox)
 
-		# TODO: only add points that are not matches
+		# intersection and points scoring
+		indexes = list(sorted(list(set([m.queryIdx for m in matches])), reverse=True))
+		for i in indexes:
+			keypoints[i].score *= 1.5
+			keypoints.pop(i)
+			map_points.pop(i)
+		
+		poly1 = Polygon(enlarged_bbox)
+		poly2 = Polygon(transformed_bbox)
+		intersection = poly1.intersection(poly2)
+		for i in range(len(map_points)):
+			point = Point(map_points[i])
+			if intersection.contains(point):
+				keypoints[i].score *= 0.7
+
+		min_y = min(np.min(enlarged_bbox[:, 1]), np.min(transformed_bbox[:, 1]))
+		max_y = max(np.max(enlarged_bbox[:, 1]), np.max(transformed_bbox[:, 1]))
+		plot_bbox(transformed_bbox, 'blue')
+		plot_bbox(enlarged_bbox, 'blue', '--')
+		plot_bbox(np.array(intersection.exterior.coords), 'red')
+		plt.ylim(max_y+50, min_y-50)
+		plt.show()
+
+		indexes = list(sorted(list(set([m.trainIdx for m in matches])), reverse=True))
+		features = list(features)
+		descriptors = list(descriptors)
+		for i in indexes:
+			features.pop(i)
+			descriptors.pop(i)
 		new_points = np.array([kp.pt for kp in features])
 		new_points = cv2.perspectiveTransform(new_points.reshape(-1, 1, 2), homography)
 		new_points = np.squeeze(new_points)
@@ -215,8 +244,7 @@ class Generator:
 			color = 'red'
 		return color
 
-	def plot_map(self):
-		
+	def plot_map(self):	
 		kp_dict = dict()
 		
 		for kp in self.map.keypoints:
