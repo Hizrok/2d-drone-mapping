@@ -17,7 +17,7 @@ pip install -r requirements.txt
 python main.py [-h] [-s {KM,PI}] [-l LIMIT] [-n SKIP_N] dirpath
 
 positional arguments:
-  dirpath               cesta k adresáří, který obsahuje snímky
+  dirpath               cesta k adresáři, který obsahuje snímky
 
 options:
   -h, --help            ukáže tuto zprávu v angličtině
